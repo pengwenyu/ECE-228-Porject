@@ -13,7 +13,7 @@ Then, repalce our detection folder to reference/detetion in the torchvision. And
 Third, cearte a folder named annotations inside the tt100k_2021 dataset.
 Last, go back to detetion folder run the command:
 
-torchrun --nproc_per_node=1 train.py --dataset coco --data-path=data/tt100k_2021 --lr = 0.0001 --model fasterrcnn_resnet50_fpn --epochs 20 --lr-steps 16 22 --aspect-ratio-group-factor 3 --weights-backbone ResNet50_Weights.IMAGENET1K_V1
+>torchrun --nproc_per_node=1 train.py --dataset coco --data-path=data/tt100k_2021 --lr = 0.0001 --model fasterrcnn_resnet50_fpn --epochs 20 --lr-steps 16 22 --aspect-ratio-group-factor 3 --weights-backbone ResNet50_Weights.IMAGENET1K_V1
 
 
 
