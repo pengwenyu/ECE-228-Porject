@@ -2,9 +2,12 @@
 
 This respository is used fro UCSD Spring 2022 ECE 228 project.
 
-To run our program of Faster R-CNN, you need to first download Torchvision from this url:https://github.com/pytorch/vision. Use this command to install the nighly version of pytorch and torchvision: 
+To run our program of Faster R-CNN, you need to first download Torchvision from this url:
+>https://github.com/pytorch/vision. 
 
-pip3 install --pre torch torchvision --extra-index-url https://download.pytorch.org/whl/nightly/cu113
+Use this command to install the nighly version of pytorch and torchvision: 
+
+>pip3 install --pre torch torchvision --extra-index-url https://download.pytorch.org/whl/nightly/cu113
 
 Then, repalce our detection folder to reference/detetion in the torchvision. And also put the data tt100k_2021 under detetion folder. 
 Third, cearte a folder named annotations inside the tt100k_2021 dataset.
