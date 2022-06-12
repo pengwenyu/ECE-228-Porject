@@ -75,7 +75,6 @@ for id, (img, info) in tqdm(enumerate(imgs.items(), 1)):
                 'id': g_index,
                 'image_id': id,
                 'iscrowd': 0,
-                # mask, 矩形是从左上角点按顺时针的四个顶点
                 'segmentation': segmentation
             })
             g_index += 1
