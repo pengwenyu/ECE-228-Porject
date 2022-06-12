@@ -26,48 +26,30 @@ def jaccard(_box_a, _box_b):
     inter = torch.clamp((max_xy - min_xy), min=0)
 
     inter = inter[:, :, 0] * inter[:, :, 1]
-    # 计算先验框和真实框各自的面积
     area_a = ((box_a[:, 2] - box_a[:, 0]) *
               (box_a[:, 3] - box_a[:, 1])).unsqueeze(1).expand_as(inter)  # [A,B]
     area_b = ((box_b[:, 2] - box_b[:, 0]) *
               (box_b[:, 3] - box_b[:, 1])).unsqueeze(0).expand_as(inter)  # [A,B]
-    # 求IOU
     union = area_a + area_b - inter
     return inter / union  # [A,B]
 
 
-# ---------------------------------------------------#
-#   平滑标签
-# ---------------------------------------------------#
 def smooth_labels(y_true, label_smoothing, num_classes):
     return y_true * (1.0 - label_smoothing) + label_smoothing / num_classes
 
 
 def box_ciou(b1, b2):
-    """
-    输入为：
-    ----------
-    b1: tensor, shape=(batch, feat_w, feat_h, anchor_num, 4), xywh
-    b2: tensor, shape=(batch, feat_w, feat_h, anchor_num, 4), xywh
-
-    返回为：
-    -------
-    ciou: tensor, shape=(batch, feat_w, feat_h, anchor_num, 1)
-    """
-    # 求出预测框左上角右下角
     b1_xy = b1[..., :2]
     b1_wh = b1[..., 2:4]
     b1_wh_half = b1_wh / 2.
     b1_mins = b1_xy - b1_wh_half
     b1_maxes = b1_xy + b1_wh_half
-    # 求出真实框左上角右下角
     b2_xy = b2[..., :2]
     b2_wh = b2[..., 2:4]
     b2_wh_half = b2_wh / 2.
     b2_mins = b2_xy - b2_wh_half
     b2_maxes = b2_xy + b2_wh_half
 
-    # 求真实框和预测框所有的iou
     intersect_mins = torch.max(b1_mins, b2_mins)
     intersect_maxes = torch.min(b1_maxes, b2_maxes)
     intersect_wh = torch.max(intersect_maxes - intersect_mins, torch.zeros_like(intersect_maxes))
@@ -77,14 +59,11 @@ def box_ciou(b1, b2):
     union_area = b1_area + b2_area - intersect_area
     iou = intersect_area / torch.clamp(union_area, min=1e-6)
 
-    # 计算中心的差距
     center_distance = torch.sum(torch.pow((b1_xy - b2_xy), 2), axis=-1)
 
-    # 找到包裹两个框的最小框的左上角和右下角
     enclose_mins = torch.min(b1_mins, b2_mins)
     enclose_maxes = torch.max(b1_maxes, b2_maxes)
     enclose_wh = torch.max(enclose_maxes - enclose_mins, torch.zeros_like(intersect_maxes))
-    # 计算对角线距离
     enclose_diagonal = torch.sum(torch.pow(enclose_wh, 2), axis=-1)
     ciou = iou - 1.0 * (center_distance) / torch.clamp(enclose_diagonal, min=1e-6)
 
@@ -132,75 +111,26 @@ class YOLOLoss(nn.Module):
         self.normalize = normalize
 
     def forward(self, input, targets=None):
-        # ----------------------------------------------------#
-        #   input的shape为  bs, 3*(5+num_classes), 13, 13
-        #                   bs, 3*(5+num_classes), 26, 26
-        #                   bs, 3*(5+num_classes), 52, 52
-        # ----------------------------------------------------#
-
-        # -----------------------#
-        #   一共多少张图片
-        # -----------------------#
         bs = input.size(0)
-        # -----------------------#
-        #   特征层的高
-        # -----------------------#
         in_h = input.size(2)
-        # -----------------------#
-        #   特征层的宽
-        # -----------------------#
         in_w = input.size(3)
 
-        # -----------------------------------------------------------------------#
-        #   计算步长
-        #   每一个特征点对应原来的图片上多少个像素点
-        #   如果特征层为13x13的话，一个特征点就对应原来的图片上的32个像素点
-        #   如果特征层为26x26的话，一个特征点就对应原来的图片上的16个像素点
-        #   如果特征层为52x52的话，一个特征点就对应原来的图片上的8个像素点
-        #   stride_h = stride_w = 32、16、8
-        # -----------------------------------------------------------------------#
         stride_h = self.img_size[1] / in_h
         stride_w = self.img_size[0] / in_w
-
-        # -------------------------------------------------#
-        #   此时获得的scaled_anchors大小是相对于特征层的
-        # -------------------------------------------------#
         scaled_anchors = [(a_w / stride_w, a_h / stride_h) for a_w, a_h in self.anchors]
 
-        # -----------------------------------------------#
-        #   输入的input一共有三个，他们的shape分别是
-        #   batch_size, 3, 13, 13, 5 + num_classes
-        #   batch_size, 3, 26, 26, 5 + num_classes
-        #   batch_size, 3, 52, 52, 5 + num_classes
-        # -----------------------------------------------#
         prediction = input.view(bs, int(self.num_anchors / 3),
                                 self.bbox_attrs, in_h, in_w).permute(0, 1, 3, 4, 2).contiguous()
 
-        # 获得置信度，是否有物体
         conf = torch.sigmoid(prediction[..., 4])
-        # 种类置信度
         pred_cls = torch.sigmoid(prediction[..., 5:])
 
-        # ---------------------------------------------------------------#
-        #   找到哪些先验框内部包含物体
-        #   利用真实框和先验框计算交并比
-        #   mask        batch_size, 3, in_h, in_w   有目标的特征点
-        #   noobj_mask  batch_size, 3, in_h, in_w   无目标的特征点
-        #   t_box       batch_size, 3, in_h, in_w, 4   中心宽高的真实值
-        #   tconf       batch_size, 3, in_h, in_w   置信度真实值
-        #   tcls        batch_size, 3, in_h, in_w, num_classes  种类真实值
-        #   box_loss_scale_x, box_loss_scale_y, gt的宽高，作为目标权重
-        # ----------------------------------------------------------------#
         mask, noobj_mask, t_box, tconf, tcls, box_loss_scale_x, box_loss_scale_y = self.get_target(targets,
                                                                                                    scaled_anchors, in_w,
                                                                                                    in_h,
                                                                                                    self.ignore_threshold)
 
-        # ---------------------------------------------------------------#
-        #   将预测结果进行解码，判断预测结果和真实值的重合程度
-        #   如果重合程度过大则忽略，因为这些特征点属于预测比较准确的特征点
-        #   作为负样本不合适
-        # ----------------------------------------------------------------#
+
         noobj_mask, pred_boxes_for_ciou = self.get_ignore(prediction, targets, scaled_anchors, in_w, in_h, noobj_mask)
 
         if self.cuda:
@@ -211,19 +141,12 @@ class YOLOLoss(nn.Module):
             t_box = t_box.cuda()
 
         box_loss_scale = 2 - box_loss_scale_x * box_loss_scale_y
-        # ---------------------------------------------------------------#
-        #   计算预测结果和真实结果的CIOU
-        # ----------------------------------------------------------------#
         ciou = (1 - box_ciou(pred_boxes_for_ciou[mask.bool()], t_box[mask.bool()])) * box_loss_scale[mask.bool()]
         loss_loc = torch.sum(ciou)
 
-        # 计算置信度的loss
         loss_conf = torch.sum(BCELoss(conf, mask) * mask) + \
                     torch.sum(BCELoss(conf, mask) * noobj_mask)
 
-        # ---------------------------------------------------------------#
-        #   类别增加smooth_labels
-        # ----------------------------------------------------------------#
         loss_cls = torch.sum(
             BCELoss(pred_cls[mask == 1], smooth_labels(tcls[mask == 1], self.label_smooth, self.num_classes)))
 
@@ -238,18 +161,9 @@ class YOLOLoss(nn.Module):
         return loss, num_pos
 
     def get_target(self, target, anchors, in_w, in_h, ignore_threshold):
-        # -----------------------------------------------------#
-        #   计算一共有多少张图片
-        # -----------------------------------------------------#
         bs = len(target)
-        # -------------------------------------------------------#
-        #   获得当前特征层先验框所属的编号，方便后面对先验框筛选
-        # -------------------------------------------------------#
         anchor_index = [[0, 1, 2], [3, 4, 5], [6, 7, 8]][self.feature_length.index(in_w)]
         subtract_index = [0, 3, 6][self.feature_length.index(in_w)]
-        # -------------------------------------------------------#
-        #   创建全是0或者全是1的阵列
-        # -------------------------------------------------------#
         mask = torch.zeros(bs, int(self.num_anchors / 3), in_h, in_w, requires_grad=False)
         noobj_mask = torch.ones(bs, int(self.num_anchors / 3), in_h, in_w, requires_grad=False)
 
@@ -266,55 +180,27 @@ class YOLOLoss(nn.Module):
         for b in range(bs):
             if len(target[b]) == 0:
                 continue
-            # -------------------------------------------------------#
-            #   计算出正样本在特征层上的中心点
-            # -------------------------------------------------------#
             gxs = target[b][:, 0:1] * in_w
             gys = target[b][:, 1:2] * in_h
 
-            # -------------------------------------------------------#
-            #   计算出正样本相对于特征层的宽高
-            # -------------------------------------------------------#
             gws = target[b][:, 2:3] * in_w
             ghs = target[b][:, 3:4] * in_h
 
-            # -------------------------------------------------------#
-            #   计算出正样本属于特征层的哪个特征点
-            # -------------------------------------------------------#
             gis = torch.floor(gxs)
             gjs = torch.floor(gys)
 
-            # -------------------------------------------------------#
-            #   将真实框转换一个形式
-            #   num_true_box, 4
-            # -------------------------------------------------------#
+        
             gt_box = torch.FloatTensor(torch.cat([torch.zeros_like(gws), torch.zeros_like(ghs), gws, ghs], 1))
 
-            # -------------------------------------------------------#
-            #   将先验框转换一个形式
-            #   9, 4
-            # -------------------------------------------------------#
             anchor_shapes = torch.FloatTensor(
                 torch.cat((torch.zeros((self.num_anchors, 2)), torch.FloatTensor(anchors)), 1))
             # -------------------------------------------------------#
-            #   计算交并比
-            #   num_true_box, 9
-            # -------------------------------------------------------#
             anch_ious = jaccard(gt_box, anchor_shapes)
 
-            # -------------------------------------------------------#
-            #   计算重合度最大的先验框是哪个
-            #   num_true_box, 
-            # -------------------------------------------------------#
             best_ns = torch.argmax(anch_ious, dim=-1)
             for i, best_n in enumerate(best_ns):
                 if best_n not in anchor_index:
                     continue
-                # -------------------------------------------------------------#
-                #   取出各类坐标：
-                #   gi和gj代表的是真实框对应的特征点的x轴y轴坐标
-                #   gx和gy代表真实框的x轴和y轴坐标
-                #   gw和gh代表真实框的宽和高
                 # -------------------------------------------------------------#
                 gi = gis[i].long()
                 gj = gjs[i].long()
@@ -324,37 +210,15 @@ class YOLOLoss(nn.Module):
                 gh = ghs[i]
                 if (gj < in_h) and (gi < in_w):
                     best_n = best_n - subtract_index
-                    # ----------------------------------------#
-                    #   noobj_mask代表无目标的特征点
-                    # ----------------------------------------#
-                    noobj_mask[b, best_n, gj, gi] = 0
-                    # ----------------------------------------#
-                    #   mask代表有目标的特征点
-                    # ----------------------------------------#
+
                     mask[b, best_n, gj, gi] = 1
-                    # ----------------------------------------#
-                    #   tx、ty代表中心的真实值
-                    # ----------------------------------------#
                     tx[b, best_n, gj, gi] = gx
                     ty[b, best_n, gj, gi] = gy
-                    # ----------------------------------------#
-                    #   tw、th代表宽高的真实值
-                    # ----------------------------------------#
                     tw[b, best_n, gj, gi] = gw
                     th[b, best_n, gj, gi] = gh
-                    # ----------------------------------------#
-                    #   用于获得xywh的比例
-                    #   大目标loss权重小，小目标loss权重大
-                    # ----------------------------------------#
                     box_loss_scale_x[b, best_n, gj, gi] = target[b][i, 2]
                     box_loss_scale_y[b, best_n, gj, gi] = target[b][i, 3]
-                    # ----------------------------------------#
-                    #   tconf代表物体置信度
-                    # ----------------------------------------#
                     tconf[b, best_n, gj, gi] = 1
-                    # ----------------------------------------#
-                    #   tcls代表种类置信度
-                    # ----------------------------------------#
                     tcls[b, best_n, gj, gi, target[b][i, 4].long()] = 1
                 else:
                     print('Step {0} out of bound'.format(b))
@@ -367,42 +231,29 @@ class YOLOLoss(nn.Module):
         return mask, noobj_mask, t_box, tconf, tcls, box_loss_scale_x, box_loss_scale_y
 
     def get_ignore(self, prediction, target, scaled_anchors, in_w, in_h, noobj_mask):
-        # -----------------------------------------------------#
-        #   计算一共有多少张图片
-        # -----------------------------------------------------#
         bs = len(target)
-        # -------------------------------------------------------#
-        #   获得当前特征层先验框所属的编号，方便后面对先验框筛选
-        # -------------------------------------------------------#
         anchor_index = [[0, 1, 2], [3, 4, 5], [6, 7, 8]][self.feature_length.index(in_w)]
         scaled_anchors = np.array(scaled_anchors)[anchor_index]
 
-        # 先验框的中心位置的调整参数
         x = torch.sigmoid(prediction[..., 0])
         y = torch.sigmoid(prediction[..., 1])
-        # 先验框的宽高调整参数
         w = prediction[..., 2]  # Width
         h = prediction[..., 3]  # Height
 
         FloatTensor = torch.cuda.FloatTensor if x.is_cuda else torch.FloatTensor
         LongTensor = torch.cuda.LongTensor if x.is_cuda else torch.LongTensor
 
-        # 生成网格，先验框中心，网格左上角
         grid_x = torch.linspace(0, in_w - 1, in_w).repeat(in_h, 1).repeat(
             int(bs * self.num_anchors / 3), 1, 1).view(x.shape).type(FloatTensor)
         grid_y = torch.linspace(0, in_h - 1, in_h).repeat(in_w, 1).t().repeat(
             int(bs * self.num_anchors / 3), 1, 1).view(y.shape).type(FloatTensor)
 
-        # 生成先验框的宽高
         anchor_w = FloatTensor(scaled_anchors).index_select(1, LongTensor([0]))
         anchor_h = FloatTensor(scaled_anchors).index_select(1, LongTensor([1]))
 
         anchor_w = anchor_w.repeat(bs, 1).repeat(1, 1, in_h * in_w).view(w.shape)
         anchor_h = anchor_h.repeat(bs, 1).repeat(1, 1, in_h * in_w).view(h.shape)
 
-        # -------------------------------------------------------#
-        #   计算调整后的先验框中心与宽高
-        # -------------------------------------------------------#
         pred_boxes = FloatTensor(prediction[..., :4].shape)
         pred_boxes[..., 0] = x + grid_x
         pred_boxes[..., 1] = y + grid_y
@@ -410,15 +261,7 @@ class YOLOLoss(nn.Module):
         pred_boxes[..., 3] = torch.exp(h) * anchor_h
         for i in range(bs):
             pred_boxes_for_ignore = pred_boxes[i]
-            # -------------------------------------------------------#
-            #   将预测结果转换一个形式
-            #   pred_boxes_for_ignore      num_anchors, 4
-            # -------------------------------------------------------#
             pred_boxes_for_ignore = pred_boxes_for_ignore.view(-1, 4)
-            # -------------------------------------------------------#
-            #   计算真实框，并把真实框转换成相对于特征层的大小
-            #   gt_box      num_true_box, 4
-            # -------------------------------------------------------#
             if len(target[i]) > 0:
                 gx = target[i][:, 0:1] * in_w
                 gy = target[i][:, 1:2] * in_h
@@ -426,15 +269,7 @@ class YOLOLoss(nn.Module):
                 gh = target[i][:, 3:4] * in_h
                 gt_box = torch.FloatTensor(torch.cat([gx, gy, gw, gh], -1)).type(FloatTensor)
 
-                # -------------------------------------------------------#
-                #   计算交并比
-                #   anch_ious       num_true_box, num_anchors
-                # -------------------------------------------------------#
                 anch_ious = jaccard(gt_box, pred_boxes_for_ignore)
-                # -------------------------------------------------------#
-                #   每个先验框对应真实框的最大重合度
-                #   anch_ious_max   num_anchors
-                # -------------------------------------------------------#
                 anch_ious_max, _ = torch.max(anch_ious, dim=0)
                 anch_ious_max = anch_ious_max.view(pred_boxes[i].size()[:3])
                 noobj_mask[i][anch_ious_max > self.ignore_threshold] = 0
