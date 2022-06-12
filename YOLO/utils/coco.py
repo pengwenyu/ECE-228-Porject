@@ -51,7 +51,6 @@ class COCO(Dataset):
         return np.random.rand() * (b - a) + a
 
     def get_random_data(self, img_id, input_shape, hue=.1, sat=1.5, val=1.5, random=True):
-        """实时数据增强的随机预处理"""
         img_path = os.path.join(self.img_dir, self.coco.loadImgs(ids=[img_id])[0]['file_name'])
 
         ann_ids = self.coco.getAnnIds(imgIds=[img_id])
@@ -62,7 +61,7 @@ class COCO(Dataset):
             box = np.array([[0., 0., 0., 0., 0.]], dtype=np.float32)
 
         box[:, 2:4] += box[:, :2]  # xywh to xyxy
-        #print('??????????????????????????',img_path)
+        #print('??????????????',img_path)
         image = cv2.imread(img_path)
         iw, ih = image.shape[0], image.shape[1]
         h, w = input_shape
@@ -81,17 +80,14 @@ class COCO(Dataset):
         scale = max(ih, iw) * 1.0
         flipped = False
         if random:
-            # 随机选择一个尺寸来训练
             scale = scale * np.random.choice(self.rand_scales)
             w_border = get_border(256, iw)
             h_border = get_border(256, ih)
 
-            # 在【w_border，-w_border】内圈随机选一个中心点
             center[0] = np.random.randint(low=w_border, high=iw - w_border)
             center[1] = np.random.randint(low=h_border, high=ih - h_border)
 
             if np.random.random() < 0.5:
-                # 水平翻转
                 flipped = True
                 image = image[:, ::-1, :]
                 center[0] = iw - center[0] - 1
@@ -99,7 +95,7 @@ class COCO(Dataset):
         trans_img = get_affine_transform(center, scale, 0, [w, h])
         image = cv2.warpAffine(image, trans_img, (w, h))
 
-        to_deleted = []  # 去除不在图中的框
+        to_deleted = []
         for bi, bbox in enumerate(box):
             if flipped:
                 bbox[[0, 2]] = iw - bbox[[2, 0]] - 1
@@ -111,13 +107,11 @@ class COCO(Dataset):
             box_w = bbox[2] - bbox[0]
             box_h = bbox[3] - bbox[1]
 
-            bbox = bbox[:4][np.logical_and(box_w > 1, box_h > 1)]  # 保留有效框
+            bbox = bbox[:4][np.logical_and(box_w > 1, box_h > 1)] 
             if len(bbox) == 0:
                 to_deleted.append(bi)
             else:
                 box[bi, :4] = bbox
-
-        # 去除不在图中的框
         if len(to_deleted):
             box = np.delete(box, to_deleted, axis=0)
         # -----------------------------------debug---------------------------------
@@ -130,7 +124,6 @@ class COCO(Dataset):
         # cv2.imshow("center", image)
         # -----------------------------------debug---------------------------------
         if random:
-            # 色域变换
             hue = self.rand(-hue, hue)
             sat = self.rand(1, sat) if self.rand() < .5 else 1 / self.rand(1, sat)
             val = self.rand(1, val) if self.rand() < .5 else 1 / self.rand(1, val)
@@ -175,17 +168,12 @@ class COCO(Dataset):
 
             image = Image.open(img_path)
             image = image.convert("RGB")
-
-            # 图片的大小
             iw, ih = image.size
-
-            # 是否翻转图片
             flip = self.rand() < .5
             if flip and len(box) > 0:
                 image = image.transpose(Image.FLIP_LEFT_RIGHT)
                 box[:, [0, 2]] = iw - box[:, [2, 0]]
 
-            # 对输入进来的图片进行缩放
             new_ar = w / h
             scale = self.rand(scale_low, scale_high)  # 0.7 0.8999999999999999
             if new_ar < 1:
@@ -196,7 +184,6 @@ class COCO(Dataset):
                 nh = int(nw / new_ar)
             image = image.resize((nw, nh), Image.BICUBIC)
 
-            # 进行色域变换
             hue = self.rand(-hue, hue)
             sat = self.rand(1, sat) if self.rand() < .5 else 1 / self.rand(1, sat)
             val = self.rand(1, val) if self.rand() < .5 else 1 / self.rand(1, val)
@@ -212,8 +199,6 @@ class COCO(Dataset):
             image = cv2.cvtColor(x, cv2.COLOR_HSV2RGB)  # numpy array, 0 to 1
 
             image = Image.fromarray((image * 255).astype(np.uint8))
-
-            # 将图片进行放置，分别对应四张分割图片的位置
             dx = place_x[index]
             dy = place_y[index]
 
@@ -224,7 +209,6 @@ class COCO(Dataset):
             # cv2.imshow(f"{img_id}", image_data)
             index = index + 1
             box_data = []
-            # 对box进行重新处理
             if len(box) > 0:
                 np.random.shuffle(box)
                 box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
@@ -240,8 +224,6 @@ class COCO(Dataset):
 
             image_datas.append(image_data)
             box_datas.append(box_data)
-
-        # 将图片分割，放在一起
         cutx = np.random.randint(int(w * min_offset_x), int(w * (1 - min_offset_x)))
         cuty = np.random.randint(int(h * min_offset_y), int(h * (1 - min_offset_y)))
 
@@ -251,7 +233,6 @@ class COCO(Dataset):
         new_image[cuty:, cutx:, :] = image_datas[2][cuty:, cutx:, :]
         new_image[:cuty, cutx:, :] = image_datas[3][:cuty, cutx:, :]
 
-        # 对框进行进一步的处理
         new_boxes = np.array(merge_bboxes(box_datas, cutx, cuty))
 
         return new_image, new_boxes
@@ -279,7 +260,6 @@ class COCO(Dataset):
         # -----------------------------------debug---------------------------------
 
         if len(y) != 0:
-            # 从坐标转换成0~1的百分比
             boxes = np.array(y[:, :4], dtype=np.float32)
             boxes[:, 0] = boxes[:, 0] / self.image_size[1]
             boxes[:, 1] = boxes[:, 1] / self.image_size[0]
@@ -301,7 +281,7 @@ class COCO(Dataset):
         return img_id, tmp_inp, tmp_targets
 
 
-class COCOEval(COCO):
+class COCOEval(COCO):#Coco class for test dataset evaluation
     def __init__(self, data_dir, image_size=(416, 416)):
         super(COCOEval, self).__init__(data_dir, image_size)
         self.data_dir = 'yolov4-TT100k/'#data_dir   #modify!!!!
@@ -336,7 +316,6 @@ class COCOEval(COCO):
             scale = min(w_ori / self.image_size[0], h_ori / self.image_size[1])
             nw = int(self.image_size[0] * scale)
             nh = int(self.image_size[1] * scale)
-            # 调整目标框坐标
             if detection is not None:
                 detection[:, [0, 2]] = detection[:, [0, 2]] * nw / self.image_size[0]
                 detection[:, [1, 3]] = detection[:, [1, 3]] * nh / self.image_size[1]
@@ -388,7 +367,6 @@ class COCOEval(COCO):
         # -----------------------------------debug---------------------------------
 
         if len(y) != 0:
-            # 从坐标转换成0~1的百分比
             boxes = np.array(y[:, :4], dtype=np.float32)
             boxes[:, 0] = boxes[:, 0] / self.image_size[1]
             boxes[:, 1] = boxes[:, 1] / self.image_size[0]
@@ -410,7 +388,6 @@ class COCOEval(COCO):
         return img_id, tmp_inp, tmp_targets
 
 
-# DataLoader中collate_fn使用
 def yolo_dataset_collate(batch):
     images = []
     bboxes = []

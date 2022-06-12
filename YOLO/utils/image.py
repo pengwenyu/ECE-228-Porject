@@ -8,10 +8,6 @@ def flip(img):
 
 
 def get_border(border, size):
-    """
-    当图片的w/h大于256时，便返回128，否则返回64，
-    意思是图片较大时返回128，较小是返回64
-    """
     i = 1
     while size - border // i <= border // i:
         i *= 2
